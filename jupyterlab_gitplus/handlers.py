@@ -10,6 +10,11 @@ from shutil import copyfile, rmtree
 from .github_v3 import create_pull_request, get_repository_details_for_pr
 from .utils import get_owner_login_and_repo_name, onerror
 
+from jupyter_server.utils import url2path
+try:
+    import hybridcontents
+except ImportError:
+    hybridcontents = None
 
 import traceback
 import logging
@@ -20,8 +25,19 @@ GITHUB_ENDPOINT = 'https://github.com/'
 GITHUB_REMOTE_DOMAIN = 'github.com'
 REVIEWNB_ENDPOINT = 'https://app.reviewnb.com/'
 
+class _GitPlusHandler(IPythonHandler):
+    def _get_local_path(self, path):
+        if (hybridcontents is not None) and isinstance(self.contents_manager, hybridcontents.HybridContentsManager):
+            _, cm, inner_path = hybridcontents.hybridmanager._resolve_path(path, self.contents_manager.managers)
+            local_path = os.path.join(
+                os.path.expanduser(cm.root_dir),
+                url2path(inner_path)
+            )
+            return local_path
+        else:
+            return path
 
-class ModifiedRepositoryListHandler(IPythonHandler):
+class ModifiedRepositoryListHandler(_GitPlusHandler):
     '''
     Given a list of recently opened files we return repositories to which these files belong to (if the file is under a git repository)
     '''
@@ -36,17 +52,18 @@ class ModifiedRepositoryListHandler(IPythonHandler):
 
             for file in body:
                 try:
-                    repo = Repo(file['path'], search_parent_directories=True)
+                    local_path = self._get_local_path(file['path'])
+                    repo = Repo(local_path, search_parent_directories=True)
 
                     if GITHUB_REMOTE_DOMAIN not in repo.remotes.origin.url:
-                        logger.info('File is not a part of GitHub repository: ' + file['path'])
+                        logger.info('File is not a part of GitHub repository: ' + local_path)
                     elif repo.working_dir not in unique_paths:
                         unique_paths.add(repo.working_dir)
                         repositories.append(repo)
                 except git.exc.NoSuchPathError:
-                    logger.info('File not found: ' + file['path'])
+                    logger.info('File not found: ' + local_path)
                 except git.exc.InvalidGitRepositoryError:
-                    logger.info('File is not under Git repository: ' + file['path'])
+                    logger.info('File is not under Git repository: ' + local_path)
 
             for repo in repositories:
                 path = repo.working_dir.replace(os.sep, '/')
